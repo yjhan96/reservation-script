@@ -34,7 +34,7 @@ from urllib.error import URLError, HTTPError
 CONFIG = {
     # Date ranges to monitor (inclusive). Add as many as you like.
     "date_ranges": [
-        {"start_date": "2026-09-06", "end_date": "2026-09-07"},
+        {"start_date": "2026-04-06", "end_date": "2026-09-07"},
         {"start_date": "2026-09-18", "end_date": "2026-09-18"},
     ],
 
