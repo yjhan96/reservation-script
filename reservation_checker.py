@@ -245,9 +245,18 @@ def create_github_issue(
     date_list = "\n".join(
         f"- **{d['date_string']}** (`{d['date']}`)" for d in available_dates
     )
-    dates_short = ", ".join(d["date"] for d in available_dates)
 
+    # Build a title that fits within GitHub's 256-character limit.
+    # When there are many dates, summarize with first date, last date, and count.
+    dates_short = ", ".join(d["date"] for d in available_dates)
     title = f"Reservation Available: {restaurant_name} ({dates_short})"
+    if len(title) > 256:
+        first = available_dates[0]["date"]
+        last = available_dates[-1]["date"]
+        title = (
+            f"Reservation Available: {restaurant_name} "
+            f"({len(available_dates)} dates, {first} to {last})"
+        )
 
     # Dedup: skip if an open issue with this title already exists
     existing = _find_open_issue(repo, token, title)
