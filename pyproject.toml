@@ -1,0 +1,9 @@
+[project]
+name = "reservation-script"
+version = "0.1.0"
+description = "Restaurant reservation availability checker for Maido and Central (Lima, Peru)"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+check-reservations = "reservation_checker:main"

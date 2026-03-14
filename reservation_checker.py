@@ -3,7 +3,7 @@
 Restaurant Reservation Availability Checker Bot
 ================================================
 Monitors Maido and Central (Lima, Peru) for reservation openings
-using the mesa 24/7 API. Sends email notifications when availability is found.
+using the mesa 24/7 API. Creates GitHub Issues when availability is found.
 
 Both restaurants use mesa247.pe for their booking system.
 - Maido booking page:   https://maido.mesa247.pe/reservas/maido
@@ -19,12 +19,10 @@ Configuration:
 
 import json
 import logging
-import smtplib
+import os
 import sys
 import time
 from datetime import datetime, date
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from typing import Optional
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -60,17 +58,14 @@ CONFIG = {
         },
     ],
 
-    # --- Email Notification Settings (optional) ---
-    # Set "enabled" to True and fill in the fields to receive email alerts.
-    # Example using Gmail: use an App Password (not your regular password).
-    # To generate one: Google Account > Security > 2-Step Verification > App passwords
-    "email": {
-        "enabled": False,
-        "smtp_server": "smtp.gmail.com",
-        "smtp_port": 587,
-        "sender_email": "your_email@gmail.com",
-        "sender_password": "your_app_password_here",
-        "recipient_email": "your_email@gmail.com",
+    # --- GitHub Issue Notification Settings ---
+    # When running in GitHub Actions, set GITHUB_TOKEN and GITHUB_REPOSITORY
+    # env vars (both are provided automatically by GitHub Actions).
+    # Issues are created when availability is found, with dedup to avoid spam.
+    "github_notification": {
+        "enabled": True,
+        "repo": os.environ.get("GITHUB_REPOSITORY", "yjhan96/reservation-script"),
+        "token": os.environ.get("GITHUB_TOKEN", ""),
     },
 }
 
@@ -183,47 +178,106 @@ def filter_available_dates(
     return available_dates
 
 
-def send_email_notification(
+def _github_api_request(
+    method: str, url: str, token: str, data: Optional[dict] = None
+) -> Optional[dict]:
+    """Make a GitHub API request and return parsed JSON response."""
+    body = json.dumps(data).encode("utf-8") if data else None
+    req = Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "ReservationChecker/1.0",
+        },
+    )
+    if body:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urlopen(req, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (URLError, HTTPError) as e:
+        logger.error(f"GitHub API request failed: {e}")
+        return None
+
+
+def _find_open_issue(
+    repo: str, token: str, title: str
+) -> Optional[int]:
+    """Check if an open issue with the exact title already exists. Returns issue number or None."""
+    from urllib.parse import quote
+    search_url = (
+        f"https://api.github.com/search/issues"
+        f"?q={quote(title)}+repo:{repo}+state:open+label:reservation-alert"
+    )
+    result = _github_api_request("GET", search_url, token)
+    if result and result.get("total_count", 0) > 0:
+        for item in result["items"]:
+            if item["title"] == title:
+                return item["number"]
+    return None
+
+
+def create_github_issue(
     restaurant_name: str,
     available_dates: list[dict],
     booking_url: str,
-    email_config: dict,
+    github_config: dict,
 ) -> bool:
-    """Send an email notification about available reservations."""
-    if not email_config.get("enabled"):
+    """
+    Create a GitHub Issue when availability is found.
+    Skips creation if an open issue with the same title already exists (dedup).
+    """
+    if not github_config.get("enabled"):
+        return False
+
+    token = github_config.get("token", "")
+    repo = github_config.get("repo", "")
+    if not token or not repo:
+        logger.warning(
+            "GitHub notification enabled but GITHUB_TOKEN or GITHUB_REPOSITORY not set. "
+            "Skipping issue creation."
+        )
         return False
 
     date_list = "\n".join(
-        f"  - {d['date_string']} ({d['date']})" for d in available_dates
+        f"- **{d['date_string']}** (`{d['date']}`)" for d in available_dates
     )
+    dates_short = ", ".join(d["date"] for d in available_dates)
 
-    subject = f"Reservation Available: {restaurant_name}!"
+    title = f"Reservation Available: {restaurant_name} ({dates_short})"
+
+    # Dedup: skip if an open issue with this title already exists
+    existing = _find_open_issue(repo, token, title)
+    if existing is not None:
+        logger.info(
+            f"  Issue already open (#{existing}) for {restaurant_name}. Skipping."
+        )
+        return False
+
     body = (
-        f"Great news! {restaurant_name} has reservation availability:\n\n"
+        f"## Reservation available at {restaurant_name}!\n\n"
+        f"The following dates have availability:\n\n"
         f"{date_list}\n\n"
-        f"Book now: {booking_url}\n\n"
-        f"-- Reservation Checker Bot"
+        f"**Book now:** {booking_url}\n\n"
+        f"---\n"
+        f"*This issue was created automatically by the reservation checker bot.*"
     )
 
-    msg = MIMEMultipart()
-    msg["From"] = email_config["sender_email"]
-    msg["To"] = email_config["recipient_email"]
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain"))
+    url = f"https://api.github.com/repos/{repo}/issues"
+    result = _github_api_request(
+        "POST", url, token, {"title": title, "body": body, "labels": ["reservation-alert"]}
+    )
 
-    try:
-        with smtplib.SMTP(
-            email_config["smtp_server"], email_config["smtp_port"]
-        ) as server:
-            server.starttls()
-            server.login(
-                email_config["sender_email"], email_config["sender_password"]
-            )
-            server.send_message(msg)
-        logger.info(f"Email notification sent for {restaurant_name}")
+    if result and "number" in result:
+        logger.info(
+            f"  GitHub Issue #{result['number']} created for {restaurant_name}"
+        )
         return True
-    except Exception as e:
-        logger.error(f"Failed to send email: {e}")
+    else:
+        logger.error(f"  Failed to create GitHub Issue for {restaurant_name}")
         return False
 
 
@@ -274,12 +328,12 @@ def run_single_check(config: dict) -> dict[str, list[dict]]:
             for d in available:
                 logger.info(f"    -> {d['date_string']} ({d['date']})")
 
-            # Send email notification
-            send_email_notification(
+            # Create GitHub Issue notification
+            create_github_issue(
                 restaurant_name=name,
                 available_dates=available,
                 booking_url=booking_url,
-                email_config=config["email"],
+                github_config=config["github_notification"],
             )
         else:
             logger.info(f"  No availability for {name} in the target ranges.")

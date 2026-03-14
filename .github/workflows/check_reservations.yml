@@ -6,6 +6,9 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch: # Allow manual triggering
 
+permissions:
+  issues: write
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -13,10 +16,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Run reservation checker
-        run: python3 reservation_checker.py --once
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run reservation_checker.py --once
